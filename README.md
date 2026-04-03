@@ -1,6 +1,6 @@
 # linux2windt
 
-**v1.5.0**
+**v1.6.0**
 
 Perl-based file transfer script for Raspberry Pi. Scans a local folder for new files, wakes a Windows server via Wake-on-LAN, transfers files over SMB using `smbclient`, verifies file sizes, and optionally sends a completion report to Home Assistant.
 
@@ -12,6 +12,7 @@ Perl-based file transfer script for Raspberry Pi. Scans a local folder for new f
 | `linux2windt.conf.example` | Example configuration template — copy to `linux2windt.conf` and fill in your values |
 | `migrate.pl` | Config migration engine — auto-applies renames/adds/drops when config schema changes between versions |
 | `install.sh` | Copies example config, sets up cron job, desktop icon, permissions, checks dependencies |
+| `update.sh` | Updates to the latest version from GitHub, preserving your config and local state |
 | `uninstall.sh` | Removes cron job and desktop shortcut (preserves logs) |
 | `.gitignore` | Keeps `linux2windt.conf` (credentials), `.schema_version`, and logs out of the repo |
 
@@ -115,29 +116,16 @@ Installed automatically by `install.sh` if missing:
 
 ## Updating
 
+## Updating
+
 ```bash
-# 1. Back up your current config
-cp linux2windt.conf ~/linux2windt.conf.bak
-
-# 2. Remove the old clone and re-clone the latest version
-cd ..
-rm -rf linux2windt
-git clone https://github.com/dapanda1/linux2windt.git
-cd linux2windt
-
-# 3. Copy your config back in
-cp ~/linux2windt.conf.bak linux2windt.conf
-
-# 4. Re-run the installer
-bash install.sh
-
-# 5. The first run automatically migrates your config
-perl linux2windt.pl --dry-run
+cd ~/linux2windt
+bash update.sh
 ```
 
-When the script starts, `migrate.pl` checks your config's schema version against the current version. If the schema has changed (new keys, renamed keys, dropped keys), it applies the changes automatically — your existing values are preserved. A `.bak` backup of the config is created before any changes are written.
+That's it. The update script backs up your config and migration state, clones the latest version from GitHub, restores your files, and re-runs `install.sh`. Any config schema changes are applied automatically on the next transfer run via `migrate.pl`.
 
-To preview what a migration would do without applying it:
+To preview what a config migration would do without applying it:
 
 ```bash
 perl migrate.pl --dry-run

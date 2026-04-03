@@ -18,7 +18,7 @@ DESKTOP_FILE="$HOME/Desktop/linux2windt.desktop"
 CRON_TAG="# linux2windt"
 
 echo "==========================================="
-echo "  linux2windt v1.5.0 - Installer"
+echo "  linux2windt v1.6.0 - Installer"
 echo "==========================================="
 echo ""
 echo "Script directory: $SCRIPT_DIR"
@@ -90,9 +90,11 @@ echo "[3/7] Setting file permissions..."
 
 chmod 755 "$SCRIPT_DIR/$SCRIPT_NAME"
 chmod 755 "$SCRIPT_DIR/migrate.pl"
+chmod 755 "$SCRIPT_DIR/update.sh"
 chmod 600 "$SCRIPT_DIR/$CONFIG_NAME"
 echo "  $SCRIPT_NAME -> 755 (executable)"
 echo "  migrate.pl   -> 755 (executable)"
+echo "  update.sh    -> 755 (executable)"
 echo "  $CONFIG_NAME -> 600 (owner-only read/write)"
 
 # ------------------------------------------------------------------
