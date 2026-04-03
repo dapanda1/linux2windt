@@ -62,7 +62,7 @@ SIZE_TOLERANCE=0
 
 # --- Logging Settings -------------------------------------------------------
 # Base directory for all logs. The script creates this if it doesn't exist.
-LOG_DIR=/path/to/your/media/folder/pi-media-transfer/logs
+LOG_DIR=/path/to/your/media/folder/linux2windt/logs
 
 # Filename for the main transfer activity log.
 TRANSFER_LOG=transfer.log

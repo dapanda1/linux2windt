@@ -10,6 +10,7 @@
 #   perl linux2windt.pl                    # normal run (uses ./linux2windt.conf)
 #   perl linux2windt.pl /path/to/conf      # use a specific config file
 #   perl linux2windt.pl --dry-run          # preview without transferring
+#   perl linux2windt.pl --version          # print version and exit
 # ============================================================================
 
 use strict;
@@ -21,6 +22,11 @@ use File::Copy;
 use POSIX qw(strftime);
 use Getopt::Long;
 use JSON::PP;
+
+# ============================================================================
+# Version
+# ============================================================================
+my $VERSION = '1.1.0';
 
 # ============================================================================
 # Global state
@@ -39,10 +45,17 @@ sub main {
     # full transfer pipeline: scan -> wake -> transfer -> verify -> report.
     # ------------------------------------------------------------------
     my $config_file = '';
+    my $show_version = 0;
     GetOptions(
         'config=s' => \$config_file,
         'dry-run'  => \$dry_run,
+        'version'  => \$show_version,
     );
+
+    if ($show_version) {
+        print "linux2windt v$VERSION\n";
+        return 0;
+    }
 
     # Default config: same directory as the script
     if (!$config_file) {
@@ -62,7 +75,7 @@ sub main {
     ensure_log_dirs();
     $start_time = time();
 
-    log_info("=== linux2windt started ===");
+    log_info("=== linux2windt v$VERSION started ===");
     log_info("Dry-run mode: ON") if $dry_run;
 
     # Step 1: Find new files
@@ -648,10 +661,10 @@ sub send_ha_report {
 
     # Build the message body
     my $msg = sprintf(
-        "linux2windt %s\n" .
+        "linux2windt v%s %s\n" .
         "Files: %d found, %d transferred, %d failed\n" .
         "Duration: %s\n",
-        $status, $total, $ok, $failed, format_duration($elapsed)
+        $VERSION, $status, $total, $ok, $failed, format_duration($elapsed)
     );
 
     # Add per-file details (truncated if too many)
@@ -676,7 +689,7 @@ sub send_ha_report {
     # Send mobile push notification
     my $service = cfg('HA_NOTIFY_SERVICE', 'notify.notify');
     ha_api_call("$ha_url/api/services/$service", $token, {
-        title   => "Media Transfer: $status",
+        title   => "linux2windt: $status",
         message => $msg,
     });
 
@@ -684,7 +697,7 @@ sub send_ha_report {
     if (cfg('HA_PERSISTENT_NOTIFY', 1)) {
         my $notif_id = "linux2windt_" . strftime("%Y%m%d_%H%M%S", localtime($start_time));
         ha_api_call("$ha_url/api/services/persistent_notification/create", $token, {
-            title      => "Media Transfer: $status",
+            title      => "linux2windt: $status",
             message    => $msg,
             notification_id => $notif_id,
         });

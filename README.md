@@ -1,5 +1,7 @@
 # linux2windt
 
+**v1.1.0**
+
 Perl-based file transfer script for Raspberry Pi. Scans a local folder for new files, wakes a Windows server via Wake-on-LAN, transfers files over SMB using `smbclient`, verifies file sizes, and optionally sends a completion report to Home Assistant.
 
 ## Files
@@ -17,8 +19,8 @@ Perl-based file transfer script for Raspberry Pi. Scans a local folder for new f
 
 ```bash
 # 1. Clone to your Pi
-git clone https://github.com/dapanda1/service-manager.git
-cd service-manager
+git clone https://github.com/dapanda1/linux2windt.git
+cd linux2windt
 
 # 2. Run the installer (creates linux2windt.conf from the example template)
 bash install.sh
@@ -91,17 +93,22 @@ Installed automatically by `install.sh` if missing:
 ## Updating
 
 ```bash
-# 1. Clone the latest version
-git clone https://github.com/dapanda1/service-manager.git service-manager-new
-cd service-manager-new
+# 1. Back up your current config
+cp linux2windt.conf ~/linux2windt.conf.bak
 
-# 2. Copy your existing config into the new clone
-cp /path/to/old/service-manager/linux2windt.conf .
+# 2. Remove the old clone and re-clone the latest version
+cd ..
+rm -rf linux2windt
+git clone https://github.com/dapanda1/linux2windt.git
+cd linux2windt
 
-# 3. Re-run the installer
+# 3. Copy your config back in
+cp ~/linux2windt.conf.bak linux2windt.conf
+
+# 4. Re-run the installer
 bash install.sh
 
-# 4. The first run automatically migrates your config
+# 5. The first run automatically migrates your config
 perl linux2windt.pl --dry-run
 ```
 
