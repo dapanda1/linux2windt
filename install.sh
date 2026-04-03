@@ -27,7 +27,7 @@ echo ""
 # ------------------------------------------------------------------
 # Step 1: Check dependencies
 # ------------------------------------------------------------------
-echo "[1/5] Checking dependencies..."
+echo "[1/7] Checking dependencies..."
 
 MISSING=()
 command -v perl       >/dev/null 2>&1 || MISSING+=("perl")
@@ -63,7 +63,7 @@ fi
 # Step 2: Create config from example if needed
 # ------------------------------------------------------------------
 echo ""
-echo "[2/6] Checking configuration file..."
+echo "[2/7] Checking configuration file..."
 
 if [ ! -f "$SCRIPT_DIR/$CONFIG_NAME" ]; then
     if [ -f "$SCRIPT_DIR/${CONFIG_NAME}.example" ]; then
@@ -83,7 +83,7 @@ fi
 # Step 3: Set permissions
 # ------------------------------------------------------------------
 echo ""
-echo "[3/6] Setting file permissions..."
+echo "[3/7] Setting file permissions..."
 
 chmod 755 "$SCRIPT_DIR/$SCRIPT_NAME"
 chmod 755 "$SCRIPT_DIR/migrate.pl"
@@ -96,7 +96,7 @@ echo "  $CONFIG_NAME -> 600 (owner-only read/write)"
 # Step 4: Create log directory
 # ------------------------------------------------------------------
 echo ""
-echo "[4/6] Creating log directory..."
+echo "[4/7] Creating log directory..."
 
 # Read LOG_DIR from config
 LOG_DIR=$(grep '^LOG_DIR=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
@@ -108,10 +108,42 @@ else
 fi
 
 # ------------------------------------------------------------------
-# Step 5: Set up cron job
+# Step 5: Seed processed.log with existing files
+# ------------------------------------------------------------------
+# On first install, mark every file already in SOURCE_DIR as processed
+# so only new files added after this point get transferred.
+echo ""
+echo "[5/7] Checking processed.log..."
+
+SOURCE_DIR=$(grep '^SOURCE_DIR=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
+PROCESSED_LOG_NAME=$(grep '^PROCESSED_LOG=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
+PROCESSED_LOG_NAME="${PROCESSED_LOG_NAME:-processed.log}"
+PROCESSED_LOG_PATH="$LOG_DIR/$PROCESSED_LOG_NAME"
+
+if [ -n "$LOG_DIR" ] && [ -n "$SOURCE_DIR" ]; then
+    if [ ! -s "$PROCESSED_LOG_PATH" ]; then
+        if [ -d "$SOURCE_DIR" ]; then
+            # Strip trailing slash for consistent sed pattern
+            SOURCE_CLEAN="${SOURCE_DIR%/}"
+            COUNT=$(find "$SOURCE_CLEAN" -type f ! -path "${LOG_DIR}*" | sed "s|^${SOURCE_CLEAN}/||" | tee "$PROCESSED_LOG_PATH" | wc -l)
+            echo "  Seeded processed.log with $COUNT existing file(s)."
+            echo "  These files will be skipped on future runs."
+        else
+            echo "  SOURCE_DIR ($SOURCE_DIR) not found. Skipping seed."
+            echo "  (This is normal if the drive isn't mounted yet.)"
+        fi
+    else
+        echo "  processed.log already has entries. Skipping seed."
+    fi
+else
+    echo "  WARNING: LOG_DIR or SOURCE_DIR not set. Skipping seed."
+fi
+
+# ------------------------------------------------------------------
+# Step 6: Set up cron job
 # ------------------------------------------------------------------
 echo ""
-echo "[5/6] Setting up cron job..."
+echo "[6/7] Setting up cron job..."
 
 # Read schedule from config
 CRON_SCHEDULE=$(grep '^CRON_SCHEDULE=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
@@ -128,10 +160,10 @@ echo "  Cron job installed: $CRON_SCHEDULE"
 echo "  Full line: $CRON_LINE"
 
 # ------------------------------------------------------------------
-# Step 6: Create desktop shortcut for manual runs
+# Step 7: Create desktop shortcut for manual runs
 # ------------------------------------------------------------------
 echo ""
-echo "[6/6] Creating desktop shortcut..."
+echo "[7/7] Creating desktop shortcut..."
 
 # Ensure Desktop directory exists
 mkdir -p "$HOME/Desktop"
