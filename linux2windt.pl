@@ -9,7 +9,8 @@
 # Usage:
 #   perl linux2windt.pl                    # normal run (uses ./linux2windt.conf)
 #   perl linux2windt.pl /path/to/conf      # use a specific config file
-#   perl linux2windt.pl --dry-run          # preview without transferring
+#   perl linux2windt.pl --dry-run          # preview what would transfer (no changes)
+#   perl linux2windt.pl --seed             # mark all existing files as already processed
 #   perl linux2windt.pl --version          # print version and exit
 # ============================================================================
 
@@ -26,7 +27,7 @@ use JSON::PP;
 # ============================================================================
 # Version
 # ============================================================================
-my $VERSION = '1.2.1';
+my $VERSION = '1.5.0';
 
 # ============================================================================
 # Global state
@@ -46,10 +47,12 @@ sub main {
     # ------------------------------------------------------------------
     my $config_file = '';
     my $show_version = 0;
+    my $seed_mode = 0;
     GetOptions(
         'config=s' => \$config_file,
         'dry-run'  => \$dry_run,
         'version'  => \$show_version,
+        'seed'     => \$seed_mode,
     );
 
     if ($show_version) {
@@ -75,34 +78,63 @@ sub main {
     ensure_log_dirs();
     $start_time = time();
 
+    # --seed: Mark all existing files as already processed, then exit.
+    if ($seed_mode) {
+        return seed_processed_log();
+    }
+
     log_info("=== linux2windt v$VERSION started ===");
     log_info("Dry-run mode: ON") if $dry_run;
 
-    # Step 1: Find new files
+    # Step 1: Clean stale entries from processed log and failure tracker
+    cleanup_processed_log();
+    cleanup_failures();
+
+    # Step 2: Find new files (excluding permanently failed ones)
     my @new_files = scan_for_new_files();
-    if (!@new_files) {
+    my $failures  = load_failures();
+    my @skipped_given_up;
+    my @to_transfer;
+
+    for my $file (@new_files) {
+        my $rel = get_relative_path($file, $CFG{SOURCE_DIR});
+        if (is_given_up($rel, $failures)) {
+            push @skipped_given_up, $rel;
+        } else {
+            push @to_transfer, $file;
+        }
+    }
+
+    if (@skipped_given_up) {
+        log_warn(sprintf("Skipping %d permanently failed file(s):", scalar @skipped_given_up));
+        for my $rel (@skipped_given_up) {
+            log_warn("  GIVEN UP: $rel ($failures->{$rel}{attempts} failed run(s), last: $failures->{$rel}{last_error})");
+        }
+    }
+
+    if (!@to_transfer) {
         log_info("No new files found. Nothing to do.");
         send_ha_report(0, 0, 0, []);
         log_info("=== Run complete (no work) ===");
         return 0;
     }
-    log_info(sprintf("Found %d new file(s) to transfer.", scalar @new_files));
+    log_info(sprintf("Found %d new file(s) to transfer.", scalar @to_transfer));
 
-    # Step 2: Wake the server
+    # Step 3: Wake the server
     if (!$dry_run) {
         my $server_ready = wake_and_wait();
         if (!$server_ready) {
             my $msg = "Server did not come online after WoL. Aborting.";
             log_error($msg);
-            send_ha_report(scalar @new_files, 0, scalar @new_files,
+            send_ha_report(scalar @to_transfer, 0, scalar @to_transfer,
                 [ { file => "ALL", status => "FAILED", reason => $msg } ]);
             return 1;
         }
     }
 
-    # Step 3: Transfer each file
+    # Step 4: Transfer each file
     my ($ok_count, $fail_count) = (0, 0);
-    for my $file (@new_files) {
+    for my $file (@to_transfer) {
         if ($dry_run) {
             log_info("[DRY-RUN] Would transfer: $file");
             push @transfer_results, { file => $file, status => 'DRY-RUN', reason => '' };
@@ -115,13 +147,18 @@ sub main {
             mark_processed($file);
             $ok_count++;
         } else {
+            my $rel = get_relative_path($file, $CFG{SOURCE_DIR});
+            my $abandoned = record_failure($rel, $result->{reason});
+            if ($abandoned) {
+                $result->{status} = 'GIVEN UP';
+            }
             $fail_count++;
         }
         push @transfer_results, $result;
     }
 
-    # Step 4: Report
-    send_ha_report(scalar @new_files, $ok_count, $fail_count, \@transfer_results);
+    # Step 5: Report
+    send_ha_report(scalar @to_transfer, $ok_count, $fail_count, \@transfer_results);
     log_info(sprintf("=== Run complete: %d OK, %d FAILED out of %d ===",
         $ok_count, $fail_count, scalar @new_files));
 
@@ -310,6 +347,99 @@ sub load_processed_list {
     return \%seen;
 }
 
+sub seed_processed_log {
+    # ------------------------------------------------------------------
+    # Marks all files currently in SOURCE_DIR as already processed.
+    # Used for first-time setup so existing files are not transferred.
+    # Only adds files not already in processed.log (safe to run twice).
+    # Called via: perl linux2windt.pl --seed
+    # Returns: 0 on success
+    # ------------------------------------------------------------------
+    my $source = $CFG{SOURCE_DIR};
+    my $path   = "$CFG{LOG_DIR}/$CFG{PROCESSED_LOG}";
+    my $seen   = load_processed_list();
+
+    $source =~ s/\/+$//;
+
+    unless (-d $source) {
+        print "ERROR: SOURCE_DIR not found: $source\n";
+        return 1;
+    }
+
+    my @all_files;
+    my $log_dir = $CFG{LOG_DIR};
+
+    find({
+        wanted => sub {
+            return unless -f $_;
+            my $abs = $File::Find::name;
+            return if index($abs, $log_dir) == 0;
+            my $rel = get_relative_path($abs, $source);
+            push @all_files, $rel unless $seen->{$rel};
+        },
+        no_chdir => 1,
+    }, $source);
+
+    if (!@all_files) {
+        print "Nothing to seed — all files already in processed.log.\n";
+        return 0;
+    }
+
+    open my $fh, '>>', $path or do {
+        print "ERROR: Cannot write to $path: $!\n";
+        return 1;
+    };
+    print $fh "$_\n" for @all_files;
+    close $fh;
+
+    printf "Seeded %d file(s) into processed.log. These will be skipped on future runs.\n",
+        scalar @all_files;
+
+    return 0;
+}
+
+sub cleanup_processed_log {
+    # ------------------------------------------------------------------
+    # Removes entries from processed.log where the source file no longer
+    # exists. This prevents the log from growing indefinitely as files
+    # are added to and later removed from the source directory.
+    # Runs at the start of each transfer cycle before scanning.
+    # ------------------------------------------------------------------
+    my $path   = "$CFG{LOG_DIR}/$CFG{PROCESSED_LOG}";
+    my $source = $CFG{SOURCE_DIR};
+    $source =~ s/\/+$//;    # strip trailing slashes
+
+    return unless -f $path;
+
+    my @kept;
+    my $removed = 0;
+
+    open my $fh, '<', $path or do {
+        log_error("Cannot read processed log for cleanup: $!");
+        return;
+    };
+    while (my $rel = <$fh>) {
+        chomp $rel;
+        next if $rel eq '';
+        if (-e "$source/$rel") {
+            push @kept, $rel;
+        } else {
+            $removed++;
+        }
+    }
+    close $fh;
+
+    if ($removed > 0) {
+        open my $wfh, '>', $path or do {
+            log_error("Cannot rewrite processed log: $!");
+            return;
+        };
+        print $wfh "$_\n" for @kept;
+        close $wfh;
+        log_info("Cleaned processed.log: removed $removed stale entry(s), ${\scalar @kept} remaining.");
+    }
+}
+
 sub scan_for_new_files {
     # ------------------------------------------------------------------
     # Walks the SOURCE_DIR looking for regular files that are not yet
@@ -384,6 +514,145 @@ sub mark_processed {
     };
     print $fh "$rel\n";
     close $fh;
+
+    # Clear from failure tracker on success
+    clear_failure($rel);
+}
+
+# ============================================================================
+# Failure Tracker
+# ============================================================================
+
+sub _failures_path {
+    # ------------------------------------------------------------------
+    # Returns the path to the failures.json file in the log directory.
+    # Returns: path string
+    # ------------------------------------------------------------------
+    return "$CFG{LOG_DIR}/failures.json";
+}
+
+sub load_failures {
+    # ------------------------------------------------------------------
+    # Reads the failure tracker from failures.json. Each key is a
+    # relative file path; the value is a hashref with:
+    #   attempts  => number of runs that have tried and failed
+    #   last_error => most recent error message
+    #   last_run   => timestamp of the last failed attempt
+    #   given_up   => 1 if MAX_RUN_ATTEMPTS was exceeded
+    # Returns: hashref of tracked failures
+    # ------------------------------------------------------------------
+    my $path = _failures_path();
+    return {} unless -f $path;
+
+    open my $fh, '<', $path or do {
+        log_warn("Cannot read failures tracker: $!");
+        return {};
+    };
+    local $/;
+    my $json_text = <$fh>;
+    close $fh;
+
+    my $data = eval { decode_json($json_text) };
+    if ($@) {
+        log_warn("Corrupt failures.json, starting fresh: $@");
+        return {};
+    }
+    return $data;
+}
+
+sub save_failures {
+    # ------------------------------------------------------------------
+    # Writes the failure tracker hashref to failures.json.
+    # Args: $data - hashref of failure entries
+    # ------------------------------------------------------------------
+    my ($data) = @_;
+    my $path = _failures_path();
+
+    open my $fh, '>', $path or do {
+        log_error("Cannot write failures tracker: $!");
+        return;
+    };
+    print $fh JSON::PP->new->pretty->canonical->encode($data);
+    close $fh;
+}
+
+sub record_failure {
+    # ------------------------------------------------------------------
+    # Records a failed transfer attempt for a file. Increments the
+    # attempt counter and updates the last error and timestamp.
+    # If MAX_RUN_ATTEMPTS is exceeded, marks the file as given up.
+    # Args: $rel_path   - relative file path
+    #       $error_msg  - reason for the failure
+    # Returns: 1 if the file has been permanently abandoned, 0 otherwise
+    # ------------------------------------------------------------------
+    my ($rel_path, $error_msg) = @_;
+    my $failures = load_failures();
+    my $max      = cfg('MAX_RUN_ATTEMPTS', 3);
+
+    $failures->{$rel_path} //= { attempts => 0, given_up => 0 };
+    $failures->{$rel_path}{attempts}++;
+    $failures->{$rel_path}{last_error} = $error_msg;
+    $failures->{$rel_path}{last_run}   = strftime("%Y-%m-%d %H:%M:%S", localtime);
+
+    my $abandoned = 0;
+    if ($max > 0 && $failures->{$rel_path}{attempts} >= $max) {
+        $failures->{$rel_path}{given_up} = 1;
+        $abandoned = 1;
+        log_error("Giving up on $rel_path after $max failed run(s).");
+    }
+
+    save_failures($failures);
+    return $abandoned;
+}
+
+sub clear_failure {
+    # ------------------------------------------------------------------
+    # Removes a file from the failure tracker (called on successful
+    # transfer so a previously-failing file gets cleaned up).
+    # Args: $rel_path - relative file path
+    # ------------------------------------------------------------------
+    my ($rel_path) = @_;
+    my $failures = load_failures();
+    if (exists $failures->{$rel_path}) {
+        delete $failures->{$rel_path};
+        save_failures($failures);
+    }
+}
+
+sub is_given_up {
+    # ------------------------------------------------------------------
+    # Checks if a file has been permanently abandoned after exceeding
+    # MAX_RUN_ATTEMPTS.
+    # Args: $rel_path - relative file path
+    #       $failures - hashref from load_failures()
+    # Returns: 1 if abandoned, 0 otherwise
+    # ------------------------------------------------------------------
+    my ($rel_path, $failures) = @_;
+    return 0 unless exists $failures->{$rel_path};
+    return $failures->{$rel_path}{given_up} ? 1 : 0;
+}
+
+sub cleanup_failures {
+    # ------------------------------------------------------------------
+    # Removes entries from failures.json where the source file no longer
+    # exists, keeping the tracker in sync with the source directory.
+    # ------------------------------------------------------------------
+    my $failures = load_failures();
+    my $source   = $CFG{SOURCE_DIR};
+    $source =~ s/\/+$//;
+
+    my $removed = 0;
+    for my $rel (keys %$failures) {
+        unless (-e "$source/$rel") {
+            delete $failures->{$rel};
+            $removed++;
+        }
+    }
+
+    if ($removed > 0) {
+        save_failures($failures);
+        log_info("Cleaned failures.json: removed $removed stale entry(s).");
+    }
 }
 
 # ============================================================================
@@ -675,6 +944,8 @@ sub send_ha_report {
         my $size_str = defined $r->{size} ? format_size($r->{size}) : '?';
         if ($r->{status} eq 'OK') {
             $msg .= sprintf("  OK: %s (%s)\n", $r->{file}, $size_str);
+        } elsif ($r->{status} eq 'GIVEN UP') {
+            $msg .= sprintf("  GIVEN UP: %s - %s (max retries exceeded)\n", $r->{file}, $r->{reason});
         } elsif ($r->{status} eq 'FAILED') {
             $msg .= sprintf("  FAIL: %s - %s\n", $r->{file}, $r->{reason});
         } else {
@@ -688,7 +959,9 @@ sub send_ha_report {
 
     # Send mobile push notification
     my $service = cfg('HA_NOTIFY_SERVICE', 'notify.notify');
-    ha_api_call("$ha_url/api/services/$service", $token, {
+    # HA REST API uses slashes (notify/mobile_app_xxx), config uses dots
+    (my $service_path = $service) =~ s/\./\//;
+    ha_api_call("$ha_url/api/services/$service_path", $token, {
         title   => "linux2windt: $status",
         message => $msg,
     });

@@ -53,6 +53,12 @@ TRANSFER_RETRIES=3
 # Seconds to wait between retry attempts.
 RETRY_DELAY=10
 
+# Maximum number of separate runs to retry a failed file before giving up.
+# Each run already retries TRANSFER_RETRIES times, so total attempts =
+# MAX_RUN_ATTEMPTS x TRANSFER_RETRIES. Once exceeded, the file is marked
+# as permanently failed and skipped on future runs. Set to 0 for unlimited.
+MAX_RUN_ATTEMPTS=3
+
 # Verify file size on the remote share after transfer? (1 = yes, 0 = no)
 VERIFY_FILE_SIZE=1
 

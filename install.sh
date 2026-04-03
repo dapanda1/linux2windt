@@ -18,7 +18,7 @@ DESKTOP_FILE="$HOME/Desktop/linux2windt.desktop"
 CRON_TAG="# linux2windt"
 
 echo "==========================================="
-echo "  linux2windt v1.2.1 - Installer"
+echo "  linux2windt v1.5.0 - Installer"
 echo "==========================================="
 echo ""
 echo "Script directory: $SCRIPT_DIR"

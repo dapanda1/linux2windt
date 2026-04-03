@@ -5,6 +5,9 @@ linux2windt.conf
 .schema_version
 *.bak
 
+# Failure tracker
+failures.json
+
 # Logs
 logs/
 *.log

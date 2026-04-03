@@ -1,6 +1,6 @@
 # linux2windt
 
-**v1.2.1**
+**v1.5.0**
 
 Perl-based file transfer script for Raspberry Pi. Scans a local folder for new files, wakes a Windows server via Wake-on-LAN, transfers files over SMB using `smbclient`, verifies file sizes, and optionally sends a completion report to Home Assistant.
 
@@ -44,13 +44,33 @@ perl linux2windt.pl
 
 ## What It Does Each Run
 
-1. Scans `SOURCE_DIR` for files not yet in the processed log.
-2. Sends Wake-on-LAN packets to the Windows server.
-3. Waits for the server to respond to pings.
-4. Transfers each new file via `smbclient`, preserving subdirectory structure.
-5. Verifies the remote file size matches the local file size.
-6. Marks successfully transferred files so they're skipped next time.
-7. Optionally sends a summary report to Home Assistant (mobile push + persistent notification).
+1. Cleans `processed.log` and `failures.json` — removes entries for files that no longer exist in the source folder.
+2. Scans `SOURCE_DIR` for files not yet in the processed log, skipping any that have been permanently failed.
+3. Sends Wake-on-LAN packets to the Windows server.
+4. Waits for the server to respond to pings.
+5. Transfers each new file via `smbclient`, preserving subdirectory structure.
+6. Verifies the remote file size matches the local file size.
+7. Marks successfully transferred files so they're skipped next time. Tracks failed files in `failures.json` and gives up after `MAX_RUN_ATTEMPTS` runs (default 3).
+8. Optionally sends a summary report to Home Assistant (mobile push + persistent notification).
+
+## Seeding Existing Files
+
+If your source folder already has files you don't want transferred, you need to mark them as already processed. There are two ways:
+
+- **During install**: `install.sh` automatically seeds `processed.log` with all existing files in `SOURCE_DIR` (step 5). This happens on first install when `processed.log` is empty.
+- **Manually anytime**: Run `perl linux2windt.pl --seed` to mark all current files in `SOURCE_DIR` as processed. Safe to run multiple times — it only adds files not already in the log.
+
+After seeding, only files added to the source folder from that point forward will be transferred.
+
+## Command Reference
+
+```
+perl linux2windt.pl                  # Normal transfer run
+perl linux2windt.pl --dry-run        # Preview what would transfer (no changes made)
+perl linux2windt.pl --seed           # Mark all existing source files as already processed
+perl linux2windt.pl --version        # Print version and exit
+perl linux2windt.pl --config /path   # Use a specific config file
+```
 
 ## Logs
 
@@ -58,7 +78,8 @@ All logs go to the `LOG_DIR` path set in config.
 
 - `transfer.log` — Full activity log (info + errors)
 - `errors.log` — Errors only, for quick troubleshooting
-- `processed.log` — List of files already transferred (one relative path per line)
+- `processed.log` — Files already transferred (auto-cleaned when source files are removed)
+- `failures.json` — Tracks failed transfer attempts across runs (auto-cleaned when source files are removed)
 
 Logs auto-rotate at `LOG_MAX_SIZE` (default 5 MB), keeping `LOG_KEEP_COUNT` backups.
 
