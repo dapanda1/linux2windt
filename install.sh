@@ -18,7 +18,7 @@ DESKTOP_FILE="$HOME/Desktop/linux2windt.desktop"
 CRON_TAG="# linux2windt"
 
 echo "==========================================="
-echo "  linux2windt v1.1.0 - Installer"
+echo "  linux2windt v1.2.1 - Installer"
 echo "==========================================="
 echo ""
 echo "Script directory: $SCRIPT_DIR"
@@ -65,9 +65,12 @@ fi
 echo ""
 echo "[2/7] Checking configuration file..."
 
+FRESH_CONFIG=0
+
 if [ ! -f "$SCRIPT_DIR/$CONFIG_NAME" ]; then
     if [ -f "$SCRIPT_DIR/${CONFIG_NAME}.example" ]; then
         cp "$SCRIPT_DIR/${CONFIG_NAME}.example" "$SCRIPT_DIR/$CONFIG_NAME"
+        FRESH_CONFIG=1
         echo "  Created $CONFIG_NAME from ${CONFIG_NAME}.example"
         echo "  >>> You MUST edit $CONFIG_NAME with your settings before first run. <<<"
     else
@@ -98,13 +101,17 @@ echo "  $CONFIG_NAME -> 600 (owner-only read/write)"
 echo ""
 echo "[4/7] Creating log directory..."
 
-# Read LOG_DIR from config
-LOG_DIR=$(grep '^LOG_DIR=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
-if [ -n "$LOG_DIR" ]; then
-    mkdir -p "$LOG_DIR"
-    echo "  Created: $LOG_DIR"
+if [ "$FRESH_CONFIG" -eq 1 ]; then
+    echo "  Skipped — config has placeholder values. Re-run install.sh after editing."
 else
-    echo "  WARNING: LOG_DIR not found in config. Skipping."
+    # Read LOG_DIR from config
+    LOG_DIR=$(grep '^LOG_DIR=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
+    if [ -n "$LOG_DIR" ]; then
+        mkdir -p "$LOG_DIR"
+        echo "  Created: $LOG_DIR"
+    else
+        echo "  WARNING: LOG_DIR not found in config. Skipping."
+    fi
 fi
 
 # ------------------------------------------------------------------
@@ -115,28 +122,32 @@ fi
 echo ""
 echo "[5/7] Checking processed.log..."
 
-SOURCE_DIR=$(grep '^SOURCE_DIR=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
-PROCESSED_LOG_NAME=$(grep '^PROCESSED_LOG=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
-PROCESSED_LOG_NAME="${PROCESSED_LOG_NAME:-processed.log}"
-PROCESSED_LOG_PATH="$LOG_DIR/$PROCESSED_LOG_NAME"
+if [ "$FRESH_CONFIG" -eq 1 ]; then
+    echo "  Skipped — config has placeholder values. Re-run install.sh after editing."
+else
+    SOURCE_DIR=$(grep '^SOURCE_DIR=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
+    PROCESSED_LOG_NAME=$(grep '^PROCESSED_LOG=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
+    PROCESSED_LOG_NAME="${PROCESSED_LOG_NAME:-processed.log}"
+    PROCESSED_LOG_PATH="$LOG_DIR/$PROCESSED_LOG_NAME"
 
-if [ -n "$LOG_DIR" ] && [ -n "$SOURCE_DIR" ]; then
-    if [ ! -s "$PROCESSED_LOG_PATH" ]; then
-        if [ -d "$SOURCE_DIR" ]; then
-            # Strip trailing slash for consistent sed pattern
-            SOURCE_CLEAN="${SOURCE_DIR%/}"
-            COUNT=$(find "$SOURCE_CLEAN" -type f ! -path "${LOG_DIR}*" | sed "s|^${SOURCE_CLEAN}/||" | tee "$PROCESSED_LOG_PATH" | wc -l)
-            echo "  Seeded processed.log with $COUNT existing file(s)."
-            echo "  These files will be skipped on future runs."
+    if [ -n "$LOG_DIR" ] && [ -n "$SOURCE_DIR" ]; then
+        if [ ! -s "$PROCESSED_LOG_PATH" ]; then
+            if [ -d "$SOURCE_DIR" ]; then
+                # Strip trailing slash for consistent sed pattern
+                SOURCE_CLEAN="${SOURCE_DIR%/}"
+                COUNT=$(find "$SOURCE_CLEAN" -type f ! -path "${LOG_DIR}*" | sed "s|^${SOURCE_CLEAN}/||" | tee "$PROCESSED_LOG_PATH" | wc -l)
+                echo "  Seeded processed.log with $COUNT existing file(s)."
+                echo "  These files will be skipped on future runs."
+            else
+                echo "  SOURCE_DIR ($SOURCE_DIR) not found. Skipping seed."
+                echo "  (This is normal if the drive isn't mounted yet.)"
+            fi
         else
-            echo "  SOURCE_DIR ($SOURCE_DIR) not found. Skipping seed."
-            echo "  (This is normal if the drive isn't mounted yet.)"
+            echo "  processed.log already has entries. Skipping seed."
         fi
     else
-        echo "  processed.log already has entries. Skipping seed."
+        echo "  WARNING: LOG_DIR or SOURCE_DIR not set. Skipping seed."
     fi
-else
-    echo "  WARNING: LOG_DIR or SOURCE_DIR not set. Skipping seed."
 fi
 
 # ------------------------------------------------------------------
@@ -198,27 +209,39 @@ echo "==========================================="
 echo "  Installation Complete!"
 echo "==========================================="
 echo ""
-echo "  BEFORE FIRST RUN, edit the config file:"
-echo "    nano $SCRIPT_DIR/$CONFIG_NAME"
-echo ""
-echo "  Fill in ALL placeholder values, including:"
-echo "    - SOURCE_DIR     (local folder to scan)"
-echo "    - SMB_SERVER_IP  (Windows server IP)"
-echo "    - SMB_SHARE      (SMB share name)"
-echo "    - SMB_USER       (Windows login username)"
-echo "    - SMB_PASS       (Windows login password)"
-echo "    - WOL_MAC        (server MAC address)"
-echo "    - LOG_DIR        (where to write logs)"
-echo ""
-echo "  Optional - Home Assistant notifications:"
-echo "    - HA_NOTIFY_ENABLED=1 to enable (disabled by default)"
-echo "    - HA_URL, HA_TOKEN, HA_NOTIFY_SERVICE"
-echo ""
-echo "  To test manually:"
-echo "    perl $SCRIPT_DIR/$SCRIPT_NAME --dry-run"
-echo ""
-echo "  To run a real transfer now:"
-echo "    perl $SCRIPT_DIR/$SCRIPT_NAME"
-echo ""
-echo "  Or double-click the desktop icon."
+
+if [ "$FRESH_CONFIG" -eq 1 ]; then
+    echo "  NEXT STEPS:"
+    echo ""
+    echo "  1. Edit the config file:"
+    echo "       nano $SCRIPT_DIR/$CONFIG_NAME"
+    echo ""
+    echo "     Fill in ALL placeholder values, including:"
+    echo "       - SOURCE_DIR     (local folder to scan)"
+    echo "       - SMB_SERVER_IP  (Windows server IP)"
+    echo "       - SMB_SHARE      (SMB share name)"
+    echo "       - SMB_USER       (Windows login username)"
+    echo "       - SMB_PASS       (Windows login password)"
+    echo "       - WOL_MAC        (server MAC address)"
+    echo "       - LOG_DIR        (where to write logs)"
+    echo ""
+    echo "     Optional - Home Assistant notifications:"
+    echo "       - HA_NOTIFY_ENABLED=1 to enable (disabled by default)"
+    echo "       - HA_URL, HA_TOKEN, HA_NOTIFY_SERVICE"
+    echo ""
+    echo "  2. Re-run the installer to finish setup:"
+    echo "       bash $SCRIPT_DIR/install.sh"
+    echo ""
+    echo "  3. Test with a dry run:"
+    echo "       perl $SCRIPT_DIR/$SCRIPT_NAME --dry-run"
+else
+    echo "  To test manually:"
+    echo "    perl $SCRIPT_DIR/$SCRIPT_NAME --dry-run"
+    echo ""
+    echo "  To run a real transfer now:"
+    echo "    perl $SCRIPT_DIR/$SCRIPT_NAME"
+    echo ""
+    echo "  Or double-click the desktop icon."
+fi
+
 echo "==========================================="
