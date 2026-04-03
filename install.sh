@@ -1,0 +1,192 @@
+#!/bin/bash
+# ============================================================================
+# linux2windt - Installer
+# ============================================================================
+# Sets up:
+#   1. File permissions (chmod 600 on config, 755 on scripts)
+#   2. Cron job for scheduled daily runs
+#   3. Desktop shortcut icon for manual runs
+#   4. Dependency check (smbclient, curl, perl, ping)
+# ============================================================================
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_NAME="linux2windt.pl"
+CONFIG_NAME="linux2windt.conf"
+DESKTOP_FILE="$HOME/Desktop/linux2windt.desktop"
+CRON_TAG="# linux2windt"
+
+echo "==========================================="
+echo "  linux2windt - Installer"
+echo "==========================================="
+echo ""
+echo "Script directory: $SCRIPT_DIR"
+echo ""
+
+# ------------------------------------------------------------------
+# Step 1: Check dependencies
+# ------------------------------------------------------------------
+echo "[1/5] Checking dependencies..."
+
+MISSING=()
+command -v perl       >/dev/null 2>&1 || MISSING+=("perl")
+command -v smbclient  >/dev/null 2>&1 || MISSING+=("smbclient (samba-client)")
+command -v curl       >/dev/null 2>&1 || MISSING+=("curl")
+command -v ping       >/dev/null 2>&1 || MISSING+=("ping (iputils-ping)")
+
+# Check for Perl JSON module
+perl -MJSON::PP -e '1' 2>/dev/null || MISSING+=("perl JSON::PP (libjson-pp-perl)")
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo ""
+    echo "  MISSING DEPENDENCIES:"
+    for dep in "${MISSING[@]}"; do
+        echo "    - $dep"
+    done
+    echo ""
+    echo "  Install with:"
+    echo "    sudo apt update && sudo apt install -y smbclient curl iputils-ping libjson-pp-perl"
+    echo ""
+    read -p "  Install now? (y/n): " INSTALL_NOW
+    if [ "$INSTALL_NOW" = "y" ] || [ "$INSTALL_NOW" = "Y" ]; then
+        sudo apt update && sudo apt install -y smbclient curl iputils-ping libjson-pp-perl perl
+        echo "  Dependencies installed."
+    else
+        echo "  Skipping. Script may not work without these."
+    fi
+else
+    echo "  All dependencies found."
+fi
+
+# ------------------------------------------------------------------
+# Step 2: Create config from example if needed
+# ------------------------------------------------------------------
+echo ""
+echo "[2/6] Checking configuration file..."
+
+if [ ! -f "$SCRIPT_DIR/$CONFIG_NAME" ]; then
+    if [ -f "$SCRIPT_DIR/${CONFIG_NAME}.example" ]; then
+        cp "$SCRIPT_DIR/${CONFIG_NAME}.example" "$SCRIPT_DIR/$CONFIG_NAME"
+        echo "  Created $CONFIG_NAME from ${CONFIG_NAME}.example"
+        echo "  >>> You MUST edit $CONFIG_NAME with your settings before first run. <<<"
+    else
+        echo "  ERROR: No ${CONFIG_NAME}.example found. Cannot continue."
+        exit 1
+    fi
+else
+    echo "  $CONFIG_NAME already exists (copied from a previous install?)."
+    echo "  Any schema changes will be applied automatically on first run via migrate.pl."
+fi
+
+# ------------------------------------------------------------------
+# Step 3: Set permissions
+# ------------------------------------------------------------------
+echo ""
+echo "[3/6] Setting file permissions..."
+
+chmod 755 "$SCRIPT_DIR/$SCRIPT_NAME"
+chmod 755 "$SCRIPT_DIR/migrate.pl"
+chmod 600 "$SCRIPT_DIR/$CONFIG_NAME"
+echo "  $SCRIPT_NAME -> 755 (executable)"
+echo "  migrate.pl   -> 755 (executable)"
+echo "  $CONFIG_NAME -> 600 (owner-only read/write)"
+
+# ------------------------------------------------------------------
+# Step 4: Create log directory
+# ------------------------------------------------------------------
+echo ""
+echo "[4/6] Creating log directory..."
+
+# Read LOG_DIR from config
+LOG_DIR=$(grep '^LOG_DIR=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
+if [ -n "$LOG_DIR" ]; then
+    mkdir -p "$LOG_DIR"
+    echo "  Created: $LOG_DIR"
+else
+    echo "  WARNING: LOG_DIR not found in config. Skipping."
+fi
+
+# ------------------------------------------------------------------
+# Step 5: Set up cron job
+# ------------------------------------------------------------------
+echo ""
+echo "[5/6] Setting up cron job..."
+
+# Read schedule from config
+CRON_SCHEDULE=$(grep '^CRON_SCHEDULE=' "$SCRIPT_DIR/$CONFIG_NAME" | cut -d'=' -f2)
+if [ -z "$CRON_SCHEDULE" ]; then
+    CRON_SCHEDULE="0 2 * * *"
+    echo "  No CRON_SCHEDULE in config. Defaulting to: $CRON_SCHEDULE"
+fi
+
+CRON_LINE="$CRON_SCHEDULE perl $SCRIPT_DIR/$SCRIPT_NAME >> $LOG_DIR/cron.log 2>&1 $CRON_TAG"
+
+# Remove any existing linux2windt cron entries, then add the new one
+(crontab -l 2>/dev/null | grep -v "$CRON_TAG" ; echo "$CRON_LINE") | crontab -
+echo "  Cron job installed: $CRON_SCHEDULE"
+echo "  Full line: $CRON_LINE"
+
+# ------------------------------------------------------------------
+# Step 6: Create desktop shortcut for manual runs
+# ------------------------------------------------------------------
+echo ""
+echo "[6/6] Creating desktop shortcut..."
+
+# Ensure Desktop directory exists
+mkdir -p "$HOME/Desktop"
+
+cat > "$DESKTOP_FILE" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=linux2windt
+Comment=Manually run the media file transfer script
+Exec=lxterminal -e "bash -c 'perl $SCRIPT_DIR/$SCRIPT_NAME; echo; echo Press Enter to close...; read'"
+Icon=network-transmit
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+DESKTOP
+
+chmod +x "$DESKTOP_FILE"
+
+# On newer Raspberry Pi OS, .desktop files on the Desktop need to be trusted
+if command -v gio >/dev/null 2>&1; then
+    gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
+fi
+
+echo "  Desktop shortcut created: $DESKTOP_FILE"
+echo "  (Double-click to run a manual transfer)"
+
+# ------------------------------------------------------------------
+# Done
+# ------------------------------------------------------------------
+echo ""
+echo "==========================================="
+echo "  Installation Complete!"
+echo "==========================================="
+echo ""
+echo "  BEFORE FIRST RUN, edit the config file:"
+echo "    nano $SCRIPT_DIR/$CONFIG_NAME"
+echo ""
+echo "  Fill in ALL placeholder values, including:"
+echo "    - SOURCE_DIR     (local folder to scan)"
+echo "    - SMB_SERVER_IP  (Windows server IP)"
+echo "    - SMB_SHARE      (SMB share name)"
+echo "    - SMB_USER       (Windows login username)"
+echo "    - SMB_PASS       (Windows login password)"
+echo "    - WOL_MAC        (server MAC address)"
+echo "    - LOG_DIR        (where to write logs)"
+echo ""
+echo "  Optional - Home Assistant notifications:"
+echo "    - HA_NOTIFY_ENABLED=1 to enable (disabled by default)"
+echo "    - HA_URL, HA_TOKEN, HA_NOTIFY_SERVICE"
+echo ""
+echo "  To test manually:"
+echo "    perl $SCRIPT_DIR/$SCRIPT_NAME --dry-run"
+echo ""
+echo "  To run a real transfer now:"
+echo "    perl $SCRIPT_DIR/$SCRIPT_NAME"
+echo ""
+echo "  Or double-click the desktop icon."
+echo "==========================================="

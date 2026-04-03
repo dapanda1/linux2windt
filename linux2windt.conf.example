@@ -1,0 +1,104 @@
+# ============================================================================
+# linux2windt - Configuration File
+# ============================================================================
+# All settings for the transfer script. Nothing is hardcoded in the script.
+# Lines starting with '#' are comments. Blank lines are ignored.
+# Format: KEY=VALUE (no spaces around '=')
+# ============================================================================
+
+# --- Source Settings --------------------------------------------------------
+# Full path to the folder to scan for new files to transfer.
+SOURCE_DIR=/path/to/your/media/folder/
+
+# Recurse into subdirectories? (1 = yes, 0 = no)
+RECURSE_SUBDIRS=1
+
+# --- SMB / Destination Settings ---------------------------------------------
+# IP address of the Windows server hosting the SMB share.
+SMB_SERVER_IP=192.168.x.x
+
+# Name of the SMB share (without the server IP or slashes).
+SMB_SHARE=your_share_name
+
+# SMB username for authentication.
+SMB_USER=your_username_here
+
+# SMB password for authentication.
+# TIP: Use restrictive permissions on this file (chmod 600 transfer.conf).
+SMB_PASS=your_password_here
+
+# --- Wake-on-LAN Settings --------------------------------------------------
+# MAC address of the Windows server to wake.
+WOL_MAC=AA:BB:CC:DD:EE:FF
+
+# Broadcast address for WoL magic packet (usually x.x.x.255 for /24).
+WOL_BROADCAST=192.168.x.255
+
+# Number of WoL packets to send in a burst.
+WOL_BURST_COUNT=3
+
+# Seconds to wait between WoL burst packets.
+WOL_BURST_DELAY=1
+
+# Maximum seconds to wait for the server to come online after WoL.
+WOL_WAIT_TIMEOUT=120
+
+# Seconds between ping checks while waiting for server.
+WOL_PING_INTERVAL=5
+
+# --- Transfer Settings ------------------------------------------------------
+# Number of times to retry a failed file transfer.
+TRANSFER_RETRIES=3
+
+# Seconds to wait between retry attempts.
+RETRY_DELAY=10
+
+# Verify file size on the remote share after transfer? (1 = yes, 0 = no)
+VERIFY_FILE_SIZE=1
+
+# Allowed size difference in bytes (0 = must be exact match).
+# A small tolerance (e.g. 0) is recommended for smbclient transfers.
+SIZE_TOLERANCE=0
+
+# --- Logging Settings -------------------------------------------------------
+# Base directory for all logs. The script creates this if it doesn't exist.
+LOG_DIR=/path/to/your/media/folder/pi-media-transfer/logs
+
+# Filename for the main transfer activity log.
+TRANSFER_LOG=transfer.log
+
+# Filename for the error-only log.
+ERROR_LOG=errors.log
+
+# Filename that tracks which files have already been processed.
+PROCESSED_LOG=processed.log
+
+# Maximum log file size in bytes before rotation (5 MB default).
+LOG_MAX_SIZE=5242880
+
+# Number of rotated log files to keep.
+LOG_KEEP_COUNT=3
+
+# --- Schedule Settings ------------------------------------------------------
+# Cron expression for the scheduled run (default: daily at 2:00 AM).
+# This is used by install.sh to set up the cron job.
+CRON_SCHEDULE=0 2 * * *
+
+# --- Home Assistant Notification Settings (Optional) ------------------------
+# Enable HA notifications? (1 = yes, 0 = no)
+# Set to 1 and fill in the values below to receive transfer reports in HA.
+# If disabled, the script runs fully standalone with local logging only.
+HA_NOTIFY_ENABLED=0
+
+# Home Assistant base URL (use internal IP on same network).
+HA_URL=http://your-ha-instance:8123
+
+# Long-Lived Access Token for HA API authentication.
+# Generate at: HA Profile -> Security -> Long-Lived Access Tokens
+HA_TOKEN=your_long_lived_access_token_here
+
+# HA notification service to call (e.g. notify.mobile_app_your_phone).
+HA_NOTIFY_SERVICE=notify.mobile_app_your_phone
+
+# Also create a persistent notification in HA? (1 = yes, 0 = no)
+HA_PERSISTENT_NOTIFY=1

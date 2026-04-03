@@ -1,0 +1,11 @@
+# Real config (contains credentials) - only the .example is committed
+linux2windt.conf
+
+# Migration state and backups
+.schema_version
+*.bak
+
+# Logs
+logs/
+*.log
+*.log.*
