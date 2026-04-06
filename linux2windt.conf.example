@@ -59,6 +59,14 @@ RETRY_DELAY=10
 # as permanently failed and skipped on future runs. Set to 0 for unlimited.
 MAX_RUN_ATTEMPTS=3
 
+# Maximum file failures in a single run before aborting the entire transfer.
+# This counts files, not individual upload attempts — each file already
+# retries TRANSFER_RETRIES times before being counted as one failure.
+# If this many files fail during one run, the script stops immediately
+# and sends an abort notification to HA. Remaining files are skipped
+# until the next run. Set to 0 to never abort (process all files).
+MAX_ERRORS_BEFORE_ABORT=2
+
 # Verify file size on the remote share after transfer? (1 = yes, 0 = no)
 VERIFY_FILE_SIZE=1
 

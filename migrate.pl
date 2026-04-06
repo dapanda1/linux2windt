@@ -23,7 +23,7 @@ use File::Basename;
 # ============================================================================
 # Current schema version — bump this when adding a new migration
 # ============================================================================
-my $CURRENT_SCHEMA_VERSION = 1;
+my $CURRENT_SCHEMA_VERSION = 2;
 
 # ============================================================================
 # Migration definitions
@@ -52,6 +52,24 @@ my @MIGRATIONS = (
         rename  => {},
         add     => [],
         drop    => [],
+    },
+
+    # ----------------------------------------------------------------
+    # Version 2: Added MAX_ERRORS_BEFORE_ABORT setting.
+    # ----------------------------------------------------------------
+    {
+        version => 2,
+        desc    => 'Added MAX_ERRORS_BEFORE_ABORT setting',
+        rename  => {},
+        add     => [
+            {
+                key     => 'MAX_ERRORS_BEFORE_ABORT',
+                default => '2',
+                after   => 'MAX_RUN_ATTEMPTS',
+                comment => "# Maximum file failures in a single run before aborting the entire transfer.\n# This counts files, not individual upload attempts — each file already\n# retries TRANSFER_RETRIES times before being counted as one failure.\n# If this many files fail during one run, the script stops immediately\n# and sends an abort notification to HA. Remaining files are skipped\n# until the next run. Set to 0 to never abort (process all files).",
+            },
+        ],
+        drop => [],
     },
 
     # ----------------------------------------------------------------

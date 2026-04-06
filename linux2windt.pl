@@ -27,7 +27,7 @@ use JSON::PP;
 # ============================================================================
 # Version
 # ============================================================================
-my $VERSION = '1.6.0';
+my $VERSION = '1.8.1';
 
 # ============================================================================
 # Global state
@@ -114,7 +114,6 @@ sub main {
 
     if (!@to_transfer) {
         log_info("No new files found. Nothing to do.");
-        send_ha_report(0, 0, 0, []);
         log_info("=== Run complete (no work) ===");
         return 0;
     }
@@ -134,6 +133,8 @@ sub main {
 
     # Step 4: Transfer each file
     my ($ok_count, $fail_count) = (0, 0);
+    my $max_errors = cfg('MAX_ERRORS_BEFORE_ABORT', 2);
+
     for my $file (@to_transfer) {
         if ($dry_run) {
             log_info("[DRY-RUN] Would transfer: $file");
@@ -155,6 +156,15 @@ sub main {
             $fail_count++;
         }
         push @transfer_results, $result;
+
+        # Abort if too many errors in this run
+        if ($max_errors > 0 && $fail_count >= $max_errors) {
+            my $remaining = scalar(@to_transfer) - $ok_count - $fail_count;
+            log_error(sprintf("Aborting: hit %d errors (max %d). %d file(s) skipped.",
+                $fail_count, $max_errors, $remaining));
+            send_ha_abort($fail_count, $max_errors, $ok_count, $remaining, \@transfer_results);
+            return 1;
+        }
     }
 
     # Step 5: Report
@@ -250,11 +260,13 @@ sub _write_log {
     # ------------------------------------------------------------------
     # Low-level log writer. Appends a timestamped line to a log file.
     # Handles log rotation when the file exceeds LOG_MAX_SIZE.
-    # Args: $filename - log file name (not full path)
-    #       $level    - severity string (INFO, ERROR, WARN)
-    #       $message  - the log message text
+    # Args: $filename    - log file name (not full path)
+    #       $level       - severity string (INFO, ERROR, WARN)
+    #       $message     - the log message text
+    #       $print_stdout - if true, also print to STDOUT (default: 1)
     # ------------------------------------------------------------------
-    my ($filename, $level, $message) = @_;
+    my ($filename, $level, $message, $print_stdout) = @_;
+    $print_stdout = 1 unless defined $print_stdout;
     my $path = "$CFG{LOG_DIR}/$filename";
 
     rotate_log($path) if -f $path && -s $path > cfg('LOG_MAX_SIZE', 5242880);
@@ -265,7 +277,7 @@ sub _write_log {
     close $fh;
 
     # Also print to STDOUT for interactive/manual runs
-    print "[$timestamp] [$level] $message\n";
+    print "[$timestamp] [$level] $message\n" if $print_stdout;
 }
 
 sub rotate_log {
@@ -304,11 +316,12 @@ sub log_error {
     # ------------------------------------------------------------------
     # Logs an error message to BOTH the main transfer log and the
     # dedicated error log, so errors are easy to find in one place.
+    # Prints to STDOUT only once (via the transfer log write).
     # Args: $msg - error message text
     # ------------------------------------------------------------------
     my ($msg) = @_;
-    _write_log($CFG{TRANSFER_LOG}, 'ERROR', $msg);
-    _write_log($CFG{ERROR_LOG},    'ERROR', $msg);
+    _write_log($CFG{TRANSFER_LOG}, 'ERROR', $msg, 1);
+    _write_log($CFG{ERROR_LOG},    'ERROR', $msg, 0);
 }
 
 sub log_warn {
@@ -789,11 +802,13 @@ sub transfer_file {
         }
 
         # Build smbclient put command
+        # smbclient needs: cd to remote dir, then put <local> <remote_filename>
+        # Paths with spaces must be quoted inside the -c command string.
         my $target_dir = ($remote_dir eq '.' || $remote_dir eq '') ? '\\' : '\\' . join('\\', split(/\//, $remote_dir)) . '\\';
         my $smb_cmd = sprintf(
-            'smbclient "%s" -U "%s%%%s" -c "cd %s; put \\"%s\\"" 2>&1',
+            'smbclient "%s" -U "%s%%%s" -c "cd \\"%s\\"; put \\"%s\\" \\"%s\\"" 2>&1',
             $smb_service, $CFG{SMB_USER}, $CFG{SMB_PASS},
-            $target_dir, $local_path
+            $target_dir, $local_path, $remote_file
         );
 
         my $output = `$smb_cmd`;
@@ -863,7 +878,7 @@ sub create_remote_dirs {
     for my $part (@parts) {
         $cumulative .= "\\$part";
         my $cmd = sprintf(
-            'smbclient "%s" -U "%s%%%s" -c "mkdir %s" 2>&1',
+            'smbclient "%s" -U "%s%%%s" -c "mkdir \\"%s\\"" 2>&1',
             $service, $CFG{SMB_USER}, $CFG{SMB_PASS}, $cumulative
         );
         `$cmd`;    # ignore errors (dir may already exist)
@@ -882,7 +897,7 @@ sub get_remote_file_size {
     my ($service, $remote_dir, $remote_file) = @_;
 
     my $cmd = sprintf(
-        'smbclient "%s" -U "%s%%%s" -c "cd %s; ls \\"%s\\"" 2>&1',
+        'smbclient "%s" -U "%s%%%s" -c "cd \\"%s\\"; ls \\"%s\\"" 2>&1',
         $service, $CFG{SMB_USER}, $CFG{SMB_PASS},
         $remote_dir, $remote_file
     );
@@ -906,6 +921,77 @@ sub get_remote_file_size {
 # ============================================================================
 # Home Assistant Notification
 # ============================================================================
+
+sub send_ha_abort {
+    # ------------------------------------------------------------------
+    # Sends an abort notification to Home Assistant when the error
+    # threshold (MAX_ERRORS_BEFORE_ABORT) is reached during a run.
+    # This is a distinct notification from the normal completion report
+    # so it's immediately clear something went wrong.
+    #
+    # Args: $errors    - number of errors that triggered the abort
+    #       $max       - the configured error threshold
+    #       $ok        - files successfully transferred before abort
+    #       $remaining - files not attempted due to abort
+    #       $results   - arrayref of per-file result hashrefs
+    # ------------------------------------------------------------------
+    my ($errors, $max, $ok, $remaining, $results) = @_;
+
+    return unless cfg('HA_NOTIFY_ENABLED', 0);
+
+    my $ha_url = $CFG{HA_URL} // return;
+    my $token  = $CFG{HA_TOKEN} // return;
+
+    my $elapsed = time() - $start_time;
+
+    my $msg = sprintf(
+        "linux2windt v%s ABORTED\n" .
+        "Hit %d errors (threshold: %d). Run stopped.\n" .
+        "Transferred: %d OK, %d FAILED, %d SKIPPED\n" .
+        "Duration: %s\n\n",
+        $VERSION, $errors, $max, $ok, $errors, $remaining,
+        format_duration($elapsed)
+    );
+
+    # Add per-file details
+    my $max_detail = 20;
+    my $shown = 0;
+    for my $r (@$results) {
+        last if $shown >= $max_detail;
+        my $size_str = defined $r->{size} ? format_size($r->{size}) : '?';
+        if ($r->{status} eq 'OK') {
+            $msg .= sprintf("  OK: %s (%s)\n", $r->{file}, $size_str);
+        } elsif ($r->{status} eq 'GIVEN UP') {
+            $msg .= sprintf("  GIVEN UP: %s - %s\n", $r->{file}, $r->{reason});
+        } elsif ($r->{status} eq 'FAILED') {
+            $msg .= sprintf("  FAIL: %s - %s\n", $r->{file}, $r->{reason});
+        }
+        $shown++;
+    }
+    if (@$results > $max_detail) {
+        $msg .= sprintf("  ... and %d more\n", scalar(@$results) - $max_detail);
+    }
+
+    # Send mobile push notification
+    my $service = cfg('HA_NOTIFY_SERVICE', 'notify.notify');
+    (my $service_path = $service) =~ s/\./\//;
+    ha_api_call("$ha_url/api/services/$service_path", $token, {
+        title   => "linux2windt: ABORTED",
+        message => $msg,
+    });
+
+    # Send persistent notification
+    if (cfg('HA_PERSISTENT_NOTIFY', 1)) {
+        my $notif_id = "linux2windt_abort_" . strftime("%Y%m%d_%H%M%S", localtime($start_time));
+        ha_api_call("$ha_url/api/services/persistent_notification/create", $token, {
+            title          => "linux2windt: ABORTED",
+            message        => $msg,
+            notification_id => $notif_id,
+        });
+    }
+
+    log_info("Home Assistant abort notification sent.");
+}
 
 sub send_ha_report {
     # ------------------------------------------------------------------
