@@ -28,7 +28,7 @@ use JSON::PP;
 # ============================================================================
 # Version
 # ============================================================================
-my $VERSION = '1.9.0';
+my $VERSION = '2.0.0';
 
 # ============================================================================
 # Global state
@@ -135,16 +135,20 @@ sub main {
     # Step 4: Transfer each file
     my ($ok_count, $fail_count) = (0, 0);
     my $max_errors = cfg('MAX_ERRORS_BEFORE_ABORT', 2);
+    my $total_files = scalar @to_transfer;
 
-    for my $file (@to_transfer) {
+    for my $i (0 .. $#to_transfer) {
+        my $file = $to_transfer[$i];
+        my $file_num = $i + 1;
+
         if ($dry_run) {
-            log_info("[DRY-RUN] Would transfer: $file");
+            log_info("[DRY-RUN] [$file_num/$total_files] Would transfer: $file");
             push @transfer_results, { file => $file, status => 'DRY-RUN', reason => '' };
             $ok_count++;
             next;
         }
 
-        my $result = transfer_file($file);
+        my $result = transfer_file($file, $file_num, $total_files);
         if ($result->{success}) {
             mark_processed($file);
             $ok_count++;
@@ -169,9 +173,20 @@ sub main {
     }
 
     # Step 5: Report
-    send_ha_report(scalar @to_transfer, $ok_count, $fail_count, \@transfer_results);
+    my $total_bytes = 0;
+    for my $r (@transfer_results) {
+        $total_bytes += $r->{size} if $r->{success} && defined $r->{size};
+    }
+    my $run_elapsed = time() - $start_time;
+    my $speed_str = ($run_elapsed > 0 && $total_bytes > 0)
+        ? format_size($total_bytes / $run_elapsed) . "/s"
+        : "N/A";
+
+    send_ha_report(scalar @to_transfer, $ok_count, $fail_count, $total_bytes, \@transfer_results);
     log_info(sprintf("=== Run complete: %d OK, %d FAILED out of %d ===",
-        $ok_count, $fail_count, scalar @new_files));
+        $ok_count, $fail_count, scalar @to_transfer));
+    log_info(sprintf("=== Total transferred: %s in %s (%s) ===",
+        format_size($total_bytes), format_duration($run_elapsed), $speed_str));
 
     return ($fail_count > 0) ? 1 : 0;
 }
@@ -818,6 +833,8 @@ sub transfer_file {
     # transfer and treats a mismatch as a failure.
     #
     # Args: $local_path - absolute path to the local file
+    #       $file_num   - current file number (e.g. 3)
+    #       $total      - total files to transfer (e.g. 9)
     # Returns: hashref with keys:
     #   file    => relative path
     #   status  => 'OK' or 'FAILED'
@@ -825,13 +842,14 @@ sub transfer_file {
     #   size    => local file size in bytes
     #   remote_size => remote file size (if verified)
     # ------------------------------------------------------------------
-    my ($local_path) = @_;
+    my ($local_path, $file_num, $total) = @_;
     my $rel_path    = get_relative_path($local_path, $CFG{SOURCE_DIR});
     my $local_size  = -s $local_path;
     my $retries     = cfg('TRANSFER_RETRIES', 3);
     my $retry_delay = cfg('RETRY_DELAY', 10);
+    my $counter     = "[$file_num/$total]";
 
-    log_info("Transferring: $rel_path (${\format_size($local_size)})");
+    log_info("$counter Transferring: $rel_path (${\format_size($local_size)})");
 
     # Determine remote subdirectory (preserve folder structure)
     my $remote_dir  = dirname($rel_path);
@@ -841,7 +859,7 @@ sub transfer_file {
     my $smb_service = "//$CFG{SMB_SERVER_IP}/$CFG{SMB_SHARE}";
 
     for my $attempt (1 .. $retries) {
-        log_info("  Attempt $attempt of $retries...");
+        log_info("$counter   Attempt $attempt of $retries...");
 
         # Create remote subdirectories if needed
         if ($remote_dir ne '.' && $remote_dir ne '') {
@@ -853,37 +871,46 @@ sub transfer_file {
             ? '\\'
             : '\\' . join('\\', split(/\//, $remote_dir));
 
+        my $xfer_start = time();
+
         my $result = run_smbclient($smb_service,
             qq{cd "$target_dir"},
             qq{put "$local_path" "$remote_file"},
         );
 
+        my $xfer_elapsed = time() - $xfer_start;
+
         if ($result->{exit} != 0) {
-            log_error("  smbclient failed (exit $result->{exit}): $result->{output}");
+            log_error("$counter   smbclient failed (exit $result->{exit}): $result->{output}");
             sleep $retry_delay if $attempt < $retries;
             next;
         }
 
-        log_info("  Upload completed.");
+        # Calculate transfer speed
+        my $speed_str = ($xfer_elapsed > 0)
+            ? format_size($local_size / $xfer_elapsed) . "/s"
+            : "instant";
+
+        log_info("$counter   Upload completed in ${\format_duration($xfer_elapsed)} ($speed_str)");
 
         # Size verification
         if (cfg('VERIFY_FILE_SIZE', 1)) {
             my $remote_size = get_remote_file_size($smb_service, $target_dir, $remote_file);
             if (!defined $remote_size) {
-                log_error("  Size verification failed: could not read remote size.");
+                log_error("$counter   Size verification failed: could not read remote size.");
                 sleep $retry_delay if $attempt < $retries;
                 next;
             }
 
             my $tolerance = cfg('SIZE_TOLERANCE', 0);
             if (abs($remote_size - $local_size) > $tolerance) {
-                log_error(sprintf("  Size mismatch! Local: %d, Remote: %d",
+                log_error(sprintf("$counter   Size mismatch! Local: %d, Remote: %d",
                     $local_size, $remote_size));
                 sleep $retry_delay if $attempt < $retries;
                 next;
             }
 
-            log_info(sprintf("  Size verified: %s (local) == %s (remote)",
+            log_info(sprintf("$counter   Size verified: %s (local) == %s (remote)",
                 format_size($local_size), format_size($remote_size)));
             return {
                 file => $rel_path, status => 'OK', reason => '',
@@ -900,7 +927,7 @@ sub transfer_file {
 
     # All retries exhausted
     my $msg = "Failed after $retries attempts";
-    log_error("  $rel_path: $msg");
+    log_error("$counter   $rel_path: $msg");
     return {
         file => $rel_path, status => 'FAILED', reason => $msg,
         size => $local_size, remote_size => 'N/A', success => 0,
@@ -1036,12 +1063,13 @@ sub send_ha_report {
     # Creates both a mobile push notification and a persistent
     # notification (if enabled in config).
     #
-    # Args: $total   - total files found
-    #       $ok      - successfully transferred count
-    #       $failed  - failed transfer count
-    #       $results - arrayref of per-file result hashrefs
+    # Args: $total       - total files found
+    #       $ok          - successfully transferred count
+    #       $failed      - failed transfer count
+    #       $total_bytes - total bytes successfully transferred
+    #       $results     - arrayref of per-file result hashrefs
     # ------------------------------------------------------------------
-    my ($total, $ok, $failed, $results) = @_;
+    my ($total, $ok, $failed, $total_bytes, $results) = @_;
 
     return unless cfg('HA_NOTIFY_ENABLED', 0);
 
@@ -1050,13 +1078,17 @@ sub send_ha_report {
 
     my $elapsed = time() - $start_time;
     my $status  = ($failed > 0) ? "COMPLETED WITH ERRORS" : "SUCCESS";
+    my $speed_str = ($elapsed > 0 && $total_bytes > 0)
+        ? format_size($total_bytes / $elapsed) . "/s"
+        : "N/A";
 
     # Build the message body
     my $msg = sprintf(
         "linux2windt v%s %s\n" .
         "Files: %d found, %d transferred, %d failed\n" .
-        "Duration: %s\n",
-        $VERSION, $status, $total, $ok, $failed, format_duration($elapsed)
+        "Total transferred: %s in %s (%s)\n",
+        $VERSION, $status, $total, $ok, $failed,
+        format_size($total_bytes), format_duration($elapsed), $speed_str
     );
 
     # Add per-file details (truncated if too many)

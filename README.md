@@ -1,6 +1,6 @@
 # linux2windt
 
-**v1.9.0**
+**v2.0.0**
 
 Perl-based file transfer script for Raspberry Pi. Scans a local folder for new files, wakes a Windows server via Wake-on-LAN, transfers files over SMB using `smbclient`, verifies file sizes, and optionally sends a completion report to Home Assistant.
 
