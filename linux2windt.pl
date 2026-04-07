@@ -20,6 +20,7 @@ use File::Basename;
 use File::Find;
 use File::Path qw(make_path);
 use File::Copy;
+use File::Temp qw(tempfile);
 use POSIX qw(strftime);
 use Getopt::Long;
 use JSON::PP;
@@ -27,7 +28,7 @@ use JSON::PP;
 # ============================================================================
 # Version
 # ============================================================================
-my $VERSION = '1.8.1';
+my $VERSION = '1.9.0';
 
 # ============================================================================
 # Global state
@@ -763,6 +764,52 @@ sub is_host_reachable {
 # SMB Transfer
 # ============================================================================
 
+sub run_smbclient {
+    # ------------------------------------------------------------------
+    # Runs smbclient commands by writing them to a temp file and piping
+    # via stdin. This avoids all shell quoting issues with filenames
+    # that contain spaces, quotes, or other special characters.
+    #
+    # Args: $service  - smbclient service string (//host/share)
+    #       @commands - list of smbclient commands to execute
+    # Returns: hashref with keys:
+    #   output => combined stdout/stderr from smbclient
+    #   exit   => exit code (0 = success)
+    # ------------------------------------------------------------------
+    my ($service, @commands) = @_;
+
+    # Write commands to a temp file
+    my ($tfh, $tfile) = tempfile(UNLINK => 1, SUFFIX => '.smb');
+    for my $cmd (@commands) {
+        print $tfh "$cmd\n";
+    }
+    print $tfh "exit\n";
+    close $tfh;
+
+    # Run smbclient reading commands from the temp file
+    my $auth_file = _write_smb_auth_file();
+    my $output = `smbclient "$service" -A "$auth_file" < "$tfile" 2>&1`;
+    my $exit = $? >> 8;
+    unlink $auth_file;
+
+    return { output => $output, exit => $exit };
+}
+
+sub _write_smb_auth_file {
+    # ------------------------------------------------------------------
+    # Writes SMB credentials to a temporary auth file for smbclient -A.
+    # This avoids putting the password on the command line where it
+    # would be visible in process listings.
+    # Returns: path to the temp auth file (caller must unlink)
+    # ------------------------------------------------------------------
+    my ($tfh, $tfile) = tempfile(UNLINK => 0, SUFFIX => '.auth');
+    print $tfh "username = $CFG{SMB_USER}\n";
+    print $tfh "password = $CFG{SMB_PASS}\n";
+    close $tfh;
+    chmod 0600, $tfile;
+    return $tfile;
+}
+
 sub transfer_file {
     # ------------------------------------------------------------------
     # Transfers a single file to the SMB share using smbclient.
@@ -801,21 +848,18 @@ sub transfer_file {
             create_remote_dirs($smb_service, $remote_dir);
         }
 
-        # Build smbclient put command
-        # smbclient needs: cd to remote dir, then put <local> <remote_filename>
-        # Paths with spaces must be quoted inside the -c command string.
-        my $target_dir = ($remote_dir eq '.' || $remote_dir eq '') ? '\\' : '\\' . join('\\', split(/\//, $remote_dir)) . '\\';
-        my $smb_cmd = sprintf(
-            'smbclient "%s" -U "%s%%%s" -c "cd \\"%s\\"; put \\"%s\\" \\"%s\\"" 2>&1',
-            $smb_service, $CFG{SMB_USER}, $CFG{SMB_PASS},
-            $target_dir, $local_path, $remote_file
+        # Build remote target directory path (backslash-delimited for smbclient)
+        my $target_dir = ($remote_dir eq '.' || $remote_dir eq '')
+            ? '\\'
+            : '\\' . join('\\', split(/\//, $remote_dir));
+
+        my $result = run_smbclient($smb_service,
+            qq{cd "$target_dir"},
+            qq{put "$local_path" "$remote_file"},
         );
 
-        my $output = `$smb_cmd`;
-        my $exit   = $? >> 8;
-
-        if ($exit != 0) {
-            log_error("  smbclient failed (exit $exit): $output");
+        if ($result->{exit} != 0) {
+            log_error("  smbclient failed (exit $result->{exit}): $result->{output}");
             sleep $retry_delay if $attempt < $retries;
             next;
         }
@@ -877,11 +921,7 @@ sub create_remote_dirs {
 
     for my $part (@parts) {
         $cumulative .= "\\$part";
-        my $cmd = sprintf(
-            'smbclient "%s" -U "%s%%%s" -c "mkdir \\"%s\\"" 2>&1',
-            $service, $CFG{SMB_USER}, $CFG{SMB_PASS}, $cumulative
-        );
-        `$cmd`;    # ignore errors (dir may already exist)
+        run_smbclient($service, qq{mkdir "$cumulative"});
     }
 }
 
@@ -896,18 +936,15 @@ sub get_remote_file_size {
     # ------------------------------------------------------------------
     my ($service, $remote_dir, $remote_file) = @_;
 
-    my $cmd = sprintf(
-        'smbclient "%s" -U "%s%%%s" -c "cd \\"%s\\"; ls \\"%s\\"" 2>&1',
-        $service, $CFG{SMB_USER}, $CFG{SMB_PASS},
-        $remote_dir, $remote_file
+    my $result = run_smbclient($service,
+        qq{cd "$remote_dir"},
+        qq{ls "$remote_file"},
     );
-
-    my $output = `$cmd`;
 
     # smbclient ls output format:
     #   filename           A     123456  Thu Jan  1 00:00:00 2025
     # We look for a line containing the filename and extract the size.
-    for my $line (split /\n/, $output) {
+    for my $line (split /\n/, $result->{output}) {
         # Match lines with a size (sequence of digits) after attributes
         if ($line =~ /\s+[A-Z]*\s+(\d+)\s+\w{3}\s+\w{3}/) {
             return int($1);
