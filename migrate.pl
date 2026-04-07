@@ -23,7 +23,7 @@ use File::Basename;
 # ============================================================================
 # Current schema version — bump this when adding a new migration
 # ============================================================================
-my $CURRENT_SCHEMA_VERSION = 2;
+my $CURRENT_SCHEMA_VERSION = 3;
 
 # ============================================================================
 # Migration definitions
@@ -67,6 +67,24 @@ my @MIGRATIONS = (
                 default => '2',
                 after   => 'MAX_RUN_ATTEMPTS',
                 comment => "# Maximum file failures in a single run before aborting the entire transfer.\n# This counts files, not individual upload attempts — each file already\n# retries TRANSFER_RETRIES times before being counted as one failure.\n# If this many files fail during one run, the script stops immediately\n# and sends an abort notification to HA. Remaining files are skipped\n# until the next run. Set to 0 to never abort (process all files).",
+            },
+        ],
+        drop => [],
+    },
+
+    # ----------------------------------------------------------------
+    # Version 3: Added LONG_TRANSFER_ALERT_MINUTES setting.
+    # ----------------------------------------------------------------
+    {
+        version => 3,
+        desc    => 'Added LONG_TRANSFER_ALERT_MINUTES setting',
+        rename  => {},
+        add     => [
+            {
+                key     => 'LONG_TRANSFER_ALERT_MINUTES',
+                default => '60',
+                after   => 'SIZE_TOLERANCE',
+                comment => "# Send an HA alert if a single file transfer exceeds this many minutes.\n# Helps catch slow or stalled transfers. Set to 0 to disable.",
             },
         ],
         drop => [],

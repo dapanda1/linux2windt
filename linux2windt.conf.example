@@ -74,6 +74,10 @@ VERIFY_FILE_SIZE=1
 # A small tolerance (e.g. 0) is recommended for smbclient transfers.
 SIZE_TOLERANCE=0
 
+# Send an HA alert if a single file transfer exceeds this many minutes.
+# Helps catch slow or stalled transfers. Set to 0 to disable.
+LONG_TRANSFER_ALERT_MINUTES=60
+
 # --- Logging Settings -------------------------------------------------------
 # Base directory for all logs. The script creates this if it doesn't exist.
 LOG_DIR=/path/to/your/media/folder/linux2windt/logs

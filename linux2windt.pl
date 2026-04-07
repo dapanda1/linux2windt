@@ -28,7 +28,7 @@ use JSON::PP;
 # ============================================================================
 # Version
 # ============================================================================
-my $VERSION = '2.0.0';
+my $VERSION = '2.1.0';
 
 # ============================================================================
 # Global state
@@ -84,6 +84,13 @@ sub main {
         return seed_processed_log();
     }
 
+    # Acquire lock file to prevent overlapping runs
+    my $lock_acquired = acquire_lock();
+    if (!$lock_acquired) {
+        log_warn("Another instance is already running. Exiting.");
+        return 0;
+    }
+
     log_info("=== linux2windt v$VERSION started ===");
     log_info("Dry-run mode: ON") if $dry_run;
 
@@ -116,6 +123,7 @@ sub main {
     if (!@to_transfer) {
         log_info("No new files found. Nothing to do.");
         log_info("=== Run complete (no work) ===");
+        release_lock();
         return 0;
     }
     log_info(sprintf("Found %d new file(s) to transfer.", scalar @to_transfer));
@@ -126,8 +134,9 @@ sub main {
         if (!$server_ready) {
             my $msg = "Server did not come online after WoL. Aborting.";
             log_error($msg);
-            send_ha_report(scalar @to_transfer, 0, scalar @to_transfer,
+            send_ha_report(scalar @to_transfer, 0, scalar @to_transfer, 0,
                 [ { file => "ALL", status => "FAILED", reason => $msg } ]);
+            release_lock();
             return 1;
         }
     }
@@ -168,6 +177,7 @@ sub main {
             log_error(sprintf("Aborting: hit %d errors (max %d). %d file(s) skipped.",
                 $fail_count, $max_errors, $remaining));
             send_ha_abort($fail_count, $max_errors, $ok_count, $remaining, \@transfer_results);
+            release_lock();
             return 1;
         }
     }
@@ -188,6 +198,7 @@ sub main {
     log_info(sprintf("=== Total transferred: %s in %s (%s) ===",
         format_size($total_bytes), format_duration($run_elapsed), $speed_str));
 
+    release_lock();
     return ($fail_count > 0) ? 1 : 0;
 }
 
@@ -255,6 +266,76 @@ sub cfg {
     # ------------------------------------------------------------------
     my ($key, $default) = @_;
     return defined $CFG{$key} ? $CFG{$key} : $default;
+}
+
+# ============================================================================
+# Logging
+# ============================================================================
+
+# ============================================================================
+# Lock File
+# ============================================================================
+
+sub _lock_path {
+    # ------------------------------------------------------------------
+    # Returns the path to the lock file. Uses /tmp so it survives across
+    # the script directory but not across reboots (which is correct —
+    # a stale lock from a crashed run clears itself on restart).
+    # Returns: path string
+    # ------------------------------------------------------------------
+    return "/tmp/linux2windt.lock";
+}
+
+sub acquire_lock {
+    # ------------------------------------------------------------------
+    # Creates a lock file containing the current PID. If a lock file
+    # already exists, checks whether the PID in it is still running.
+    # If the old process is dead, takes over the lock (stale lock).
+    # Returns: 1 if lock acquired, 0 if another instance is running
+    # ------------------------------------------------------------------
+    my $path = _lock_path();
+
+    if (-f $path) {
+        open my $fh, '<', $path or return 0;
+        my $old_pid = <$fh>;
+        close $fh;
+        chomp $old_pid if defined $old_pid;
+
+        # Check if the old PID is still running
+        if (defined $old_pid && $old_pid =~ /^\d+$/ && kill(0, $old_pid)) {
+            return 0;    # another instance is genuinely running
+        }
+
+        # Stale lock — old process is gone
+        log_warn("Removing stale lock file (PID $old_pid no longer running).");
+    }
+
+    # Write our PID
+    open my $fh, '>', $path or do {
+        log_error("Cannot create lock file $path: $!");
+        return 0;
+    };
+    print $fh "$$\n";
+    close $fh;
+    return 1;
+}
+
+sub release_lock {
+    # ------------------------------------------------------------------
+    # Removes the lock file. Only removes it if the PID inside matches
+    # our own (safety check against race conditions).
+    # ------------------------------------------------------------------
+    my $path = _lock_path();
+    return unless -f $path;
+
+    open my $fh, '<', $path or return;
+    my $pid = <$fh>;
+    close $fh;
+    chomp $pid if defined $pid;
+
+    if (defined $pid && $pid eq $$) {
+        unlink $path;
+    }
 }
 
 # ============================================================================
@@ -893,6 +974,14 @@ sub transfer_file {
 
         log_info("$counter   Upload completed in ${\format_duration($xfer_elapsed)} ($speed_str)");
 
+        # Check for long transfer and send HA alert
+        my $alert_minutes = cfg('LONG_TRANSFER_ALERT_MINUTES', 60);
+        if ($alert_minutes > 0 && $xfer_elapsed > ($alert_minutes * 60)) {
+            log_warn(sprintf("$counter   Transfer took %s (threshold: %dm)",
+                format_duration($xfer_elapsed), $alert_minutes));
+            send_ha_long_transfer_alert($rel_path, $local_size, $xfer_elapsed, $speed_str);
+        }
+
         # Size verification
         if (cfg('VERIFY_FILE_SIZE', 1)) {
             my $remote_size = get_remote_file_size($smb_service, $target_dir, $remote_file);
@@ -985,6 +1074,44 @@ sub get_remote_file_size {
 # ============================================================================
 # Home Assistant Notification
 # ============================================================================
+
+sub send_ha_long_transfer_alert {
+    # ------------------------------------------------------------------
+    # Sends an alert to Home Assistant when a single file transfer
+    # exceeds LONG_TRANSFER_ALERT_MINUTES. Fires immediately so you
+    # know something is slow without waiting for the full run to finish.
+    #
+    # Args: $file      - relative file path
+    #       $size      - file size in bytes
+    #       $elapsed   - transfer time in seconds
+    #       $speed_str - formatted speed string
+    # ------------------------------------------------------------------
+    my ($file, $size, $elapsed, $speed_str) = @_;
+
+    return unless cfg('HA_NOTIFY_ENABLED', 0);
+
+    my $ha_url = $CFG{HA_URL} // return;
+    my $token  = $CFG{HA_TOKEN} // return;
+
+    my $msg = sprintf(
+        "linux2windt v%s SLOW TRANSFER\n" .
+        "File: %s (%s)\n" .
+        "Duration: %s (%s)\n" .
+        "Threshold: %d minutes\n",
+        $VERSION, $file, format_size($size),
+        format_duration($elapsed), $speed_str,
+        cfg('LONG_TRANSFER_ALERT_MINUTES', 60)
+    );
+
+    my $service = cfg('HA_NOTIFY_SERVICE', 'notify.notify');
+    (my $service_path = $service) =~ s/\./\//;
+    ha_api_call("$ha_url/api/services/$service_path", $token, {
+        title   => "linux2windt: SLOW TRANSFER",
+        message => $msg,
+    });
+
+    log_info("Home Assistant slow transfer alert sent.");
+}
 
 sub send_ha_abort {
     # ------------------------------------------------------------------
