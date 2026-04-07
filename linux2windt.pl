@@ -28,7 +28,7 @@ use JSON::PP;
 # ============================================================================
 # Version
 # ============================================================================
-my $VERSION = '2.1.0';
+my $VERSION = '2.1.2';
 
 # ============================================================================
 # Global state
@@ -1092,13 +1092,14 @@ sub send_ha_long_transfer_alert {
 
     my $ha_url = $CFG{HA_URL} // return;
     my $token  = $CFG{HA_TOKEN} // return;
+    my $name   = basename($file);
 
     my $msg = sprintf(
         "linux2windt v%s SLOW TRANSFER\n" .
         "File: %s (%s)\n" .
         "Duration: %s (%s)\n" .
         "Threshold: %d minutes\n",
-        $VERSION, $file, format_size($size),
+        $VERSION, $name, format_size($size),
         format_duration($elapsed), $speed_str,
         cfg('LONG_TRANSFER_ALERT_MINUTES', 60)
     );
@@ -1106,7 +1107,7 @@ sub send_ha_long_transfer_alert {
     my $service = cfg('HA_NOTIFY_SERVICE', 'notify.notify');
     (my $service_path = $service) =~ s/\./\//;
     ha_api_call("$ha_url/api/services/$service_path", $token, {
-        title   => "linux2windt: SLOW TRANSFER",
+        title   => "linux2windt: SLOW TRANSFER - $name",
         message => $msg,
     });
 
@@ -1149,13 +1150,14 @@ sub send_ha_abort {
     my $shown = 0;
     for my $r (@$results) {
         last if $shown >= $max_detail;
+        my $name = basename($r->{file});
         my $size_str = defined $r->{size} ? format_size($r->{size}) : '?';
         if ($r->{status} eq 'OK') {
-            $msg .= sprintf("  OK: %s (%s)\n", $r->{file}, $size_str);
+            $msg .= sprintf("  OK: %s (%s)\n", $name, $size_str);
         } elsif ($r->{status} eq 'GIVEN UP') {
-            $msg .= sprintf("  GIVEN UP: %s - %s\n", $r->{file}, $r->{reason});
+            $msg .= sprintf("  GIVEN UP: %s - %s\n", $name, $r->{reason});
         } elsif ($r->{status} eq 'FAILED') {
-            $msg .= sprintf("  FAIL: %s - %s\n", $r->{file}, $r->{reason});
+            $msg .= sprintf("  FAIL: %s - %s\n", $name, $r->{reason});
         }
         $shown++;
     }
@@ -1223,15 +1225,16 @@ sub send_ha_report {
     my $shown = 0;
     for my $r (@$results) {
         last if $shown >= $max_detail;
+        my $name = basename($r->{file});
         my $size_str = defined $r->{size} ? format_size($r->{size}) : '?';
         if ($r->{status} eq 'OK') {
-            $msg .= sprintf("  OK: %s (%s)\n", $r->{file}, $size_str);
+            $msg .= sprintf("  OK: %s (%s)\n", $name, $size_str);
         } elsif ($r->{status} eq 'GIVEN UP') {
-            $msg .= sprintf("  GIVEN UP: %s - %s (max retries exceeded)\n", $r->{file}, $r->{reason});
+            $msg .= sprintf("  GIVEN UP: %s - %s (max retries exceeded)\n", $name, $r->{reason});
         } elsif ($r->{status} eq 'FAILED') {
-            $msg .= sprintf("  FAIL: %s - %s\n", $r->{file}, $r->{reason});
+            $msg .= sprintf("  FAIL: %s - %s\n", $name, $r->{reason});
         } else {
-            $msg .= sprintf("  %s: %s\n", $r->{status}, $r->{file});
+            $msg .= sprintf("  %s: %s\n", $r->{status}, $name);
         }
         $shown++;
     }
@@ -1239,12 +1242,23 @@ sub send_ha_report {
         $msg .= sprintf("  ... and %d more files\n", scalar(@$results) - $max_detail);
     }
 
+    # Build notification title with file info
+    my $title;
+    my @ok_files = grep { $_->{status} eq 'OK' } @$results;
+    if (@ok_files == 1) {
+        $title = "linux2windt: $status - " . basename($ok_files[0]{file});
+    } elsif (@ok_files > 1) {
+        $title = sprintf("linux2windt: $status - %d files", scalar @ok_files);
+    } else {
+        $title = "linux2windt: $status";
+    }
+
     # Send mobile push notification
     my $service = cfg('HA_NOTIFY_SERVICE', 'notify.notify');
     # HA REST API uses slashes (notify/mobile_app_xxx), config uses dots
     (my $service_path = $service) =~ s/\./\//;
     ha_api_call("$ha_url/api/services/$service_path", $token, {
-        title   => "linux2windt: $status",
+        title   => $title,
         message => $msg,
     });
 
@@ -1252,7 +1266,7 @@ sub send_ha_report {
     if (cfg('HA_PERSISTENT_NOTIFY', 1)) {
         my $notif_id = "linux2windt_" . strftime("%Y%m%d_%H%M%S", localtime($start_time));
         ha_api_call("$ha_url/api/services/persistent_notification/create", $token, {
-            title      => "linux2windt: $status",
+            title      => $title,
             message    => $msg,
             notification_id => $notif_id,
         });
