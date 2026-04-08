@@ -26,6 +26,20 @@ else
     echo "No desktop shortcut found."
 fi
 
+# Remove launcher script
+if [ -f "$SCRIPT_DIR/launch.sh" ]; then
+    echo "Removing launcher script..."
+    rm -f "$SCRIPT_DIR/launch.sh"
+    echo "  Done."
+fi
+
+# Remove lock file
+if [ -f "/tmp/linux2windt.lock" ]; then
+    echo "Removing lock file..."
+    rm -f "/tmp/linux2windt.lock"
+    echo "  Done."
+fi
+
 echo ""
 echo "Uninstall complete."
 echo "  - Config and logs have NOT been deleted."

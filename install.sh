@@ -18,7 +18,7 @@ DESKTOP_FILE="$HOME/Desktop/linux2windt.desktop"
 CRON_TAG="# linux2windt"
 
 echo "==========================================="
-echo "  linux2windt v2.1.2 - Installer"
+echo "  linux2windt v2.1.3 - Installer"
 echo "==========================================="
 echo ""
 echo "Script directory: $SCRIPT_DIR"
@@ -178,20 +178,56 @@ echo "  Full line: $CRON_LINE"
 echo ""
 echo "[7/7] Creating desktop shortcut..."
 
+# Create a launcher script (avoids nested quoting issues in .desktop files)
+LAUNCHER="$SCRIPT_DIR/launch.sh"
+cat > "$LAUNCHER" <<LAUNCH
+#!/bin/bash
+cd "$SCRIPT_DIR"
+perl "$SCRIPT_DIR/$SCRIPT_NAME"
+echo ""
+echo "Press Enter to close..."
+read
+LAUNCH
+chmod 755 "$LAUNCHER"
+
 # Ensure Desktop directory exists
 mkdir -p "$HOME/Desktop"
 
-cat > "$DESKTOP_FILE" <<DESKTOP
+# Detect available terminal emulator
+TERM_CMD=""
+for term in lxterminal x-terminal-emulator xterm; do
+    if command -v "$term" >/dev/null 2>&1; then
+        TERM_CMD="$term"
+        break
+    fi
+done
+
+if [ -z "$TERM_CMD" ]; then
+    echo "  WARNING: No terminal emulator found. Desktop shortcut will use Terminal=true fallback."
+    cat > "$DESKTOP_FILE" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=linux2windt
 Comment=Manually run the media file transfer script
-Exec=lxterminal -e "bash -c 'perl $SCRIPT_DIR/$SCRIPT_NAME; echo; echo Press Enter to close...; read'"
+Exec=$LAUNCHER
+Icon=network-transmit
+Terminal=true
+Categories=Utility;
+StartupNotify=true
+DESKTOP
+else
+    cat > "$DESKTOP_FILE" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=linux2windt
+Comment=Manually run the media file transfer script
+Exec=$TERM_CMD -e $LAUNCHER
 Icon=network-transmit
 Terminal=false
 Categories=Utility;
 StartupNotify=true
 DESKTOP
+fi
 
 chmod +x "$DESKTOP_FILE"
 

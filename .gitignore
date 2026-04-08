@@ -8,6 +8,9 @@ linux2windt.conf
 # Failure tracker
 failures.json
 
+# Generated launcher (created by install.sh with real paths)
+launch.sh
+
 # Logs
 logs/
 *.log
